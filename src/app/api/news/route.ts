@@ -49,7 +49,6 @@ const keywordTranslations: { [key: string]: string } = {
 	"energy": "能源",
 	"consumer": "消費",
 	"industrial": "工業",
-	"trading": "交易",
 	"bull": "牛",
 	"bear": "熊",
 	"breakout": "突破",
@@ -59,8 +58,20 @@ const keywordTranslations: { [key: string]: string } = {
 	"sentiment": "情緒",
 };
 
+// Simple in-memory translation cache (process-local). TTL configurable via TRANSLATION_TTL_SECONDS.
+const translationCache = new Map<string, { translated: string; ts: number }>();
+const TRANSLATION_TTL_SECONDS = Number(process.env.TRANSLATION_TTL_SECONDS || 86400); // default 24 hours
+
 async function translateText(text: string): Promise<string> {
 	if (!text) return "";
+	// check cache first
+	const key = text.trim();
+	const cached = translationCache.get(key);
+	if (cached && Date.now() - cached.ts < TRANSLATION_TTL_SECONDS * 1000) {
+		return cached.translated;
+	}
+
+	let translated = text;
 	try {
 		const response = await fetch(
 			`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-TW`,
@@ -68,17 +79,24 @@ async function translateText(text: string): Promise<string> {
 		);
 		const data = await response.json();
 		if (data.responseStatus === 200 && data.responseData?.translatedText) {
-			return data.responseData.translatedText;
+			translated = data.responseData.translatedText;
 		}
 	} catch (e) {
 		// fallback to keyword replacement
+		translated = text;
 	}
 
-	let translated = text;
+	// keyword substitution fallback (improve readability)
 	Object.entries(keywordTranslations).forEach(([en, zh]) => {
 		const regex = new RegExp(`\\b${en}\\b`, "gi");
 		translated = translated.replace(regex, zh);
 	});
+
+	// store in cache
+	try {
+		translationCache.set(key, { translated, ts: Date.now() });
+	} catch {}
+
 	return translated;
 }
 

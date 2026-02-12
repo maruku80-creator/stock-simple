@@ -30,7 +30,9 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
+  const [selectedNewsItem, setSelectedNewsItem] = useState<NewsItem | null>(null);
   const [symbols, setSymbols] = useState<string[]>(DEFAULT_SYMBOLS);
+  const [refreshing, setRefreshing] = useState(false);
   const [showNews, setShowNews] = useState(true);
     const [monitored, setMonitored] = useState<string[]>(() => {
       try {
@@ -68,6 +70,7 @@ export default function Home() {
     setNewsLoading(true);
     setSelectedSymbol(symbol);
     setNewsPage(page);
+    setSelectedNewsItem(null);
     try {
       const res = await fetch(`/api/news?symbol=${encodeURIComponent(symbol)}&page=${page}&source=${source}`);
       const data = await res.json();
@@ -96,6 +99,38 @@ export default function Home() {
       setLoading(false);
     }
   }, []);
+
+  // Keep market open state updated
+  useEffect(() => {
+    setMarketOpen(isUsMarketOpenNow());
+    const t = setInterval(() => setMarketOpen(isUsMarketOpenNow()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  // small inline spinner component
+  const Spinner = ({ size = 16 }: { size?: number }) => (
+    <svg className="animate-spin inline-block" width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="10" stroke="#94a3b8" strokeWidth="4" opacity="0.25" />
+      <path d="M22 12a10 10 0 00-10-10" stroke="#fff" strokeWidth="4" strokeLinecap="round" />
+    </svg>
+  );
+
+  // Poll quotes more frequently during market hours; also poll monitored symbols
+  useEffect(() => {
+    const pollInterval = marketOpen ? 15000 : 60000;
+    const poll = async () => {
+      try {
+        setRefreshing(true);
+        await fetchQuotes(monitored.length ? monitored : symbols);
+      } finally {
+        setTimeout(() => setRefreshing(false), 600);
+      }
+    };
+    // initial poll
+    poll();
+    const id = setInterval(poll, pollInterval);
+    return () => clearInterval(id);
+  }, [marketOpen, monitored, symbols, fetchQuotes]);
 
   function isUsMarketOpenNow() {
     try {
@@ -127,6 +162,9 @@ export default function Home() {
     const s = input.trim().toUpperCase();
     if (s) {
       setSymbols([s]);
+      setSelectedSymbol(s);
+      fetchQuotes([s]);
+      fetchNews(s, 1, newsSource);
       setInput("");
     } else {
       setSymbols(DEFAULT_SYMBOLS);
@@ -171,15 +209,31 @@ export default function Home() {
         <div className="mb-6 p-4 rounded-lg bg-gradient-to-r from-slate-800 to-slate-700 border border-slate-700">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-slate-200">監控股票</h3>
-            <div className="text-xs text-slate-400">市場狀態: {marketOpen ? "營業中 (實時)" : "非營業時間"}</div>
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span>市場狀態: {marketOpen ? "營業中 (實時)" : "非營業時間"}</span>
+              {refreshing && <Spinner size={14} />}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            {monitored.map((m) => (
-              <div key={m} className="flex items-center gap-2 bg-gray-800/60 px-3 py-1 rounded-full">
-                <button onClick={() => { setSymbols([m]); fetchQuotes([m]); fetchNews(m,1,newsSource); setSelectedSymbol(m); }} className="text-sm font-medium text-slate-100 hover:underline">{m}</button>
-                <button onClick={() => removeMonitored(m)} className="text-xs text-red-400 px-2">移除</button>
-              </div>
-            ))}
+            {monitored.map((m) => {
+              const q = quotes.find((x) => x.symbol === m);
+              return (
+                <div key={m} className="flex items-center gap-3 bg-gray-800/60 px-3 py-1 rounded-full">
+                  <button onClick={() => { setSymbols([m]); fetchQuotes([m]); fetchNews(m,1,newsSource); setSelectedSymbol(m); }} className="text-sm font-medium text-slate-100 hover:underline">{m}</button>
+                  {q ? (
+                    <div className="text-xs text-slate-300">
+                      <div className="font-semibold">${q.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                      <div className={q.change > 0 ? 'text-green-400' : q.change < 0 ? 'text-red-400' : 'text-slate-400'}>
+                        {q.change > 0 ? '+' : ''}{q.change.toFixed(2)} ({q.changePercent > 0 ? '+' : ''}{q.changePercent.toFixed(2)}%)
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400">-</div>
+                  )}
+                  <button onClick={() => removeMonitored(m)} className="text-xs text-red-400 px-2">移除</button>
+                </div>
+              );
+            })}
             <button onClick={() => { addMonitored(selectedSymbol || DEFAULT_SYMBOLS[0]); }} className="ml-auto px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm">將目前股票加入監控</button>
           </div>
         </div>
@@ -225,6 +279,10 @@ export default function Home() {
                   {q.change.toFixed(2)} ({q.changePercent > 0 ? "+" : ""}
                   {q.changePercent.toFixed(2)}%)
                 </p>
+                <div className="mt-3 flex items-center gap-2">
+                  <button onClick={() => addMonitored(q.symbol)} className="px-3 py-1 rounded bg-indigo-600 text-white text-sm">加入監控</button>
+                  <button onClick={() => { setSelectedSymbol(q.symbol); fetchNews(q.symbol,1,newsSource); setShowNews(true); }} className="px-3 py-1 rounded bg-gray-700 text-slate-200 text-sm">查看新聞</button>
+                </div>
               </div>
             ))}
           </div>
@@ -235,6 +293,7 @@ export default function Home() {
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold">{selectedSymbol} 股票新聞 (近7天)</h2>
               <div className="flex items-center gap-2">
+                {newsLoading && <Spinner size={14} />}
                 <button
                   onClick={() => { setNewsSource("all"); fetchNews(selectedSymbol || DEFAULT_SYMBOLS[0], 1, "all"); }}
                   className={`px-3 py-1 rounded-lg text-sm ${newsSource === "all" ? "bg-indigo-600 text-white" : "bg-gray-700 text-slate-300"}`}
@@ -261,7 +320,7 @@ export default function Home() {
                   <div key={idx} className="p-4 rounded-lg bg-gray-800/60 border border-gray-700">
                     {item.image && <img src={item.image} alt={item.title} className="w-full h-40 object-cover rounded mb-3" />}
                     <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-bold text-base text-white">{item.title}</h3>
+                          <h3 className="font-bold text-base text-white cursor-pointer" onClick={() => setSelectedNewsItem(item)}>{item.title}</h3>
                       <span className="text-xs bg-gray-700 px-2 py-1 rounded text-slate-300">{item.source}</span>
                     </div>
                     <p className="text-slate-300 text-sm mb-2">{item.description}</p>
@@ -278,6 +337,24 @@ export default function Home() {
                     <a href={item.url} target="_blank" rel="noopener noreferrer" className="inline-block px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm">閱讀全文 →</a>
                   </div>
                 ))}
+
+                {selectedNewsItem && (
+                  <div className="mt-6 p-4 rounded-lg bg-gray-900 border border-gray-700">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <h3 className="text-lg font-bold">{selectedNewsItem.title}</h3>
+                        <p className="text-sm text-slate-400">{new Date(selectedNewsItem.publishedAt).toLocaleString('zh-TW')} · {selectedNewsItem.source}</p>
+                      </div>
+                      <a href={selectedNewsItem.url} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-400">開啟原文</a>
+                    </div>
+                    <div className="mt-3 text-slate-200">
+                      <p className="font-semibold">中文標題</p>
+                      <p className="mb-2">{selectedNewsItem.titleZh || '-'}</p>
+                      <p className="font-semibold">內文 / 摘要</p>
+                      <p>{selectedNewsItem.descriptionZh || selectedNewsItem.description || '-'}</p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex justify-between items-center mt-3">
                   <button disabled={newsPage <= 1} onClick={() => { if (newsPage > 1) fetchNews(selectedSymbol, newsPage - 1, newsSource); }} className="px-3 py-2 rounded bg-gray-700 text-slate-300 disabled:opacity-50">上一頁</button>
